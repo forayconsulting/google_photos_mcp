@@ -13,10 +13,39 @@ export function serverInstructions(pickTool: string): string {
 - Location is not available. Google removes GPS from picker downloads and returns no location field. If the user asks for photos from a place, say so and suggest searching the place name in the picker.
 - Sign-in is automatic. If Google sign-in is needed, the server opens it in the browser and continues. Never ask the user to run a command.
 - Files are temporary. They are deleted after 24 hours or when the server stops. Write derived output (notes, diagrams, markdown) to the project. Copy originals only when the user asks.
+- For any video, picked or a local file, call watch_video instead of extracting frames yourself. It returns one timeline with the full transcript, sounds, camera and subject motion, on-screen text, and people, plus storyboards, motion strips, and a spectrogram. Base answers on that timeline and those images.
+- When motion, a sound, or a moment is unclear, call inspect_video on that time window instead of guessing. Pass listen_for with plain descriptions of sounds the user asks about. Open a keyframe path when you need full detail.
+- Say plainly what the signals cannot tell you. You read a transcript and sound labels and do not hear the audio.
+- For videos longer than about 20 minutes, have a subagent call watch_video and report back, so the main conversation stays small.
 </approach>`;
 }
 
 export function registerPrompts(server: McpServer, pickTool: string): void {
+	server.registerPrompt(
+		"watch_video",
+		{
+			description: "Watch a video (picked from Google Photos or a local file) and explain what happens in it.",
+			argsSchema: {
+				question: z.string().optional().describe("What to find out about the video"),
+				path: z.string().optional().describe("A local video file. Leave empty to pick from Google Photos."),
+			},
+		},
+		({ question, path }) => ({
+			messages: [
+				{
+					role: "user",
+					content: {
+						type: "text",
+						text: `<task>Watch ${path ? `the video at ${path}` : "a video I pick from Google Photos"} and ${question ? `answer: ${question}` : "describe what happens in it"}.</task>
+<approach>${path ? "" : `Call ${pickTool} and tell me to select the video. `}Call watch_video. Read the timeline and look at the storyboards and motion strips. Call inspect_video on any moment where motion, sound, or meaning is unclear, with listen_for for specific sounds.</approach>
+<avoid>Claiming to hear tone of voice or music content. Stating CLAP matches as facts. Guessing about fast moments you did not inspect.</avoid>
+<outputs>${question ? "A direct answer, then" : "A summary, then"} a timeline of what is said, heard, and seen, with times. Note anything the signals could not settle.</outputs>`,
+					},
+				},
+			],
+		}),
+	);
+
 	server.registerPrompt(
 		"ingest_photo_set",
 		{

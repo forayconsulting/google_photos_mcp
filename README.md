@@ -9,6 +9,7 @@ You take photos on your phone. They back up to Google Photos. Later, at your lap
 - Take notes from photos of a slide deck.
 - Turn a photo of a whiteboard or journal page into Mermaid or Markdown.
 - Ingest a batch of shots of an object for photogrammetry.
+- Watch a video you took and answer questions about what was said, heard, and shown.
 
 You no longer have to download photos and paste file paths.
 
@@ -26,25 +27,54 @@ You no longer have to download photos and paste file paths.
 - There is no location data. Google removes GPS from picker downloads. Type a place name into the picker's search box instead.
 - It runs on macOS. It uses the `open` command, the Keychain, and `sips`.
 
+## Videos
+
+`watch_video` turns a video into one timeline that Claude reads in a single call. It works on picked videos and on any local video file.
+
+- **Speech:** a full, timestamped transcript from whisper.cpp (`large-v3-turbo`) with voice activity detection.
+- **Other sounds:** labels from Apple's on-device sound classifier, "sudden sound" marks for loudness jumps it cannot label, silences, and a spectrogram image.
+- **Your own sound questions:** `listen_for` takes plain descriptions, such as "a door slamming", and scores them with the open CLAP model.
+- **Motion:** optical flow from Apple's Vision framework, sampled 4 times a second. A robust camera fit separates camera motion (pan, tilt, zoom, handheld drift) from things moving in the frame. More keyframes go where more happens.
+- **Pictures:** 3x3 storyboards with time labels, frame strips of the busiest moments, on-screen text, and people.
+
+`inspect_video` zooms in on one window with dense frames, frame-by-frame motion, a motion trail, and a spectrogram.
+
+Everything runs on your Mac with no account and no paid API. The first video call downloads the whisper models (about 1.6 GB) to `~/.cache/gphotos-mcp/models/`. The first `listen_for` call downloads CLAP (about 1.4 GB) there too.
+
+Limits:
+
+- Claude reads a transcript, sound labels, and a spectrogram. It does not hear tone of voice or music the way a person does.
+- Motion is sampled. Very fast events between samples can be missed unless Claude zooms in with `inspect_video`.
+- Motion speeds are relative, and a very fast phone swing can register as a new shot.
+- There are no speaker labels yet.
+
 ## Setup
 
 1. Create a Google Cloud project and enable the Photos Picker API.
 2. In Google Auth Platform, set the audience to External and add yourself as a test user.
 3. Create a Desktop app OAuth client. Save its JSON as `~/.config/gphotos-mcp/client_secret.json`.
-4. Build the server:
+4. For videos, install the media tools:
+
+   ```sh
+   brew install ffmpeg whisper-cpp imagemagick uv
+   ```
+
+   The build compiles a small Swift helper, so the Xcode Command Line Tools must be installed (`xcode-select --install`).
+
+5. Build the server:
 
    ```sh
    npm install
    npm run build
    ```
 
-5. Register it with Claude Code:
+6. Register it with Claude Code:
 
    ```sh
    claude mcp add --scope user gphotos -e GPHOTOS_SOURCE=picker -- node "$PWD/dist/index.js"
    ```
 
-6. In a new Claude Code session, ask for photos. On first use, a Google sign-in tab opens. The server stores the refresh token in your macOS Keychain.
+7. In a new Claude Code session, ask for photos. On first use, a Google sign-in tab opens. The server stores the refresh token in your macOS Keychain.
 
 While the OAuth app stays in Testing mode, Google makes you sign in again every 7 days.
 
@@ -54,6 +84,8 @@ While the OAuth app stays in Testing mode, Google makes you sign in again every 
 |---|---|
 | `pick_photos` | Opens the picker, waits for Done, downloads the files, and returns a manifest |
 | `list_picked` | Filters photos you already picked by time, camera, or type, without opening the picker again |
+| `watch_video` | Turns a picked or local video into a timeline of speech, sounds, motion, on-screen text, and storyboards |
+| `inspect_video` | Looks closely at one time window of a video |
 | `cleanup_photos` | Deletes the temp files now |
 
 ## Development
@@ -62,5 +94,7 @@ While the OAuth app stays in Testing mode, Google makes you sign in again every 
 npm test
 npm run lint
 ```
+
+The video integration test builds a 30-second video with known speech, cuts, motion, and sounds, then checks the pipeline finds each one. It skips itself until the models are downloaded. `node spe/evals/video-smoke.mjs <video> <start> <end>` runs both video tools through the built server.
 
 The `spe/` folder holds the design evals. It compares five tool designs, selected with `GPHOTOS_CONFIG=a` through `e`. Config `c` is the default.

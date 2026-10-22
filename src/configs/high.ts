@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { filterEntries } from "../manifest.js";
 import { type PickDeps, pickPhotos, type StartedPick, startPick } from "../pick.js";
+import { registerVideoTools } from "../video/tools.js";
 import { errorResult, formatSet, progressFor, text, thumbnails } from "./common.js";
 
 export interface HighOptions {
@@ -122,6 +123,8 @@ export function registerHighLevel(server: McpServer, deps: PickDeps, opts: HighO
 			}
 		},
 	);
+
+	registerVideoTools(server, deps);
 
 	server.registerTool(
 		"cleanup_photos",
