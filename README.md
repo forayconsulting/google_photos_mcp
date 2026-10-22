@@ -39,6 +39,8 @@ You no longer have to download photos and paste file paths.
 
 `inspect_video` zooms in on one window with dense frames, frame-by-frame motion, a motion trail, and a spectrogram.
 
+Each result stays under Claude Code's 10,000-token warning for MCP responses. Up to 4 storyboards of 9 frames go inline, sized to what the model API keeps. Long videos get an evenly spaced overview board inline, and the full storyboards, keyframes, and digest stay on disk for Claude to open. `spe/evals/video-eval.md` has the measurements.
+
 Everything runs on your Mac with no account and no paid API. The first video call downloads the whisper models (about 1.6 GB) to `~/.cache/gphotos-mcp/models/`. The first `listen_for` call downloads CLAP (about 1.4 GB) there too.
 
 Limits:
@@ -95,6 +97,6 @@ npm test
 npm run lint
 ```
 
-The video integration test builds a 30-second video with known speech, cuts, motion, and sounds, then checks the pipeline finds each one. It skips itself until the models are downloaded. `node spe/evals/video-smoke.mjs <video> <start> <end>` runs both video tools through the built server.
+The video integration test builds a 30-second video with known speech, cuts, motion, and sounds, then checks the pipeline finds each one. It skips itself until the models are downloaded. `node spe/evals/video-smoke.mjs <video> <start> <end>` runs both video tools through the built server. `node spe/evals/video-trial.mjs <round> <video> <n>` runs one paid headless Claude Code trial on a fixture video and grades it against reference facts.
 
 The `spe/` folder holds the design evals. It compares five tool designs, selected with `GPHOTOS_CONFIG=a` through `e`. Config `c` is the default.

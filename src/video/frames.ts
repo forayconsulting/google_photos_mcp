@@ -15,7 +15,8 @@ export interface Keyframe extends FrameTime {
 	path: string;
 }
 
-export const DEFAULT_MAX_FRAMES = 54;
+/** Four storyboards of 9 at most. Round 1 of the video eval packed 12 per board and lost small details. */
+export const DEFAULT_MAX_FRAMES = 36;
 const MIN_GAP_S = 0.25;
 const STEADY_EVERY_S = 15;
 

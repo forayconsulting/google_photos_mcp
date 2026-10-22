@@ -229,26 +229,28 @@ describe("digest", () => {
 		expect(first).toContain("0:03.0 sudden sound");
 		expect(second).toContain("[0:12.0] Look at this.");
 		expect(second).toContain("Camera pans left");
-		expect(text).toContain("You cannot hear this audio");
+		expect(text).toContain("You do not hear the audio");
 	});
 });
 
 describe("describePeople", () => {
+	const joints = {
+		nose: [0.5, 0.2],
+		neck: [0.5, 0.3],
+		left_shoulder: [0.45, 0.4],
+		left_wrist: [0.4, 0.2],
+		right_shoulder: [0.55, 0.4],
+		right_wrist: [0.6, 0.6],
+	} as Record<string, [number, number]>;
+
 	it("reports position and raised arms from the person's own side", () => {
-		const d = describePeople({
-			path: "x",
-			people: [
-				{
-					confidence: 0.9,
-					joints: {
-						left_shoulder: [0.45, 0.4],
-						left_wrist: [0.4, 0.2],
-						right_shoulder: [0.55, 0.4],
-						right_wrist: [0.6, 0.6],
-					},
-				},
-			],
-		});
+		const d = describePeople({ path: "x", people: [{ confidence: 0.9, joints }] });
 		expect(d).toBe("1 person (center, their left arm raised, upper body only)");
+	});
+
+	it("drops weak detections with low confidence or few joints", () => {
+		const few = { left_shoulder: joints.left_shoulder, left_wrist: joints.left_wrist };
+		expect(describePeople({ path: "x", people: [{ confidence: 0.3, joints }] })).toBe("");
+		expect(describePeople({ path: "x", people: [{ confidence: 0.9, joints: few }] })).toBe("");
 	});
 });

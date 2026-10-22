@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { MODELS, MODELS_DIR } from "../video/deps.js";
-import { inspectVideo, watchVideo } from "../video/index.js";
+import { estimateTokens, inspectVideo, watchVideo } from "../video/index.js";
 
 const helper = resolve("dist/video/native/av-helper");
 const have = (bin: string) => spawnSync("/usr/bin/which", [bin]).status === 0;
@@ -109,6 +109,7 @@ describe.skipIf(!ready)("video pipeline on a known test video", () => {
 	let dir: string;
 	let video: string;
 	let digest: string;
+	let inline: string[];
 
 	beforeAll(async () => {
 		process.env.GPHOTOS_AV_HELPER = helper;
@@ -116,7 +117,13 @@ describe.skipIf(!ready)("video pipeline on a known test video", () => {
 		video = buildTestVideo(dir);
 		const r = await watchVideo(video, join(dir, "out"), { listenFor: ["a pure electronic tone", "a dog barking"] });
 		digest = r.digest;
+		inline = r.inline;
 	}, 300_000);
+
+	it("stays under Claude Code's 10,000-token MCP warning", () => {
+		expect(inline.length).toBeGreaterThanOrEqual(2);
+		expect(estimateTokens(digest, inline.length)).toBeLessThan(10_000);
+	});
 
 	it("transcribes the known sentences", () => {
 		expect(digest).toMatch(/\[0:01\.\d\] The quarterly roadmap has three priorities\./);

@@ -11,49 +11,85 @@ export interface LabeledFrame {
 	id?: string;
 }
 
-/** Tiles frames into one image with a time label under each tile. */
+/**
+ * The model API scales any image past about 1.15 megapixels or 1568 px on a side down to fit, so a bigger image
+ * only costs upload time. Claude Code also counts every image as 1600 tokens toward its MCP output limit, so
+ * the useful move is fewer images, each filled to this size.
+ */
+export const MAX_EDGE = 1568;
+export const MAX_PIXELS = 1_150_000;
+const LABEL_H = 24;
+const PAD = 2;
+
+/** Picks the column count that gives the widest tiles for n frames inside one image of MAX_EDGE and MAX_PIXELS. */
+export function gridFor(n: number, aspect: number): { cols: number; rows: number; tile: number } {
+	let best = { cols: 1, rows: n, tile: 0 };
+	for (let cols = 1; cols <= n; cols++) {
+		const rows = Math.ceil(n / cols);
+		const fits = (tw: number) => {
+			const w = cols * (tw + 2 * PAD);
+			const h = rows * (tw * aspect + LABEL_H + 2 * PAD);
+			return w <= MAX_EDGE && h <= MAX_EDGE && w * h <= MAX_PIXELS;
+		};
+		let lo = 16;
+		let hi = MAX_EDGE;
+		while (hi - lo > 1) {
+			const mid = Math.floor((lo + hi) / 2);
+			if (fits(mid)) lo = mid;
+			else hi = mid;
+		}
+		if (fits(lo) && lo > best.tile) best = { cols, rows, tile: lo };
+	}
+	return best;
+}
+
+/** Tiles frames into one image with a time label under each tile, sized to the API's native limit. */
 export async function montage(
 	frames: LabeledFrame[],
 	out: string,
-	opts: { cols: number; tile: number; aspect: number; signal?: AbortSignal },
+	opts: { aspect: number; signal?: AbortSignal },
 ): Promise<string> {
+	const { cols, tile } = gridFor(frames.length, opts.aspect);
 	const args = ["montage"];
-	for (const f of frames) args.push("-label", `${f.id ? `${f.id}  ` : ""}${fmtTime(f.t)}`, f.path);
+	for (const f of frames) args.push("-label", `${f.id ? `${f.id} ` : ""}${fmtTime(f.t)}`, f.path);
 	args.push(
 		"-tile",
-		`${opts.cols}x`,
+		`${cols}x`,
 		"-geometry",
-		`${opts.tile}x${Math.round(opts.tile * opts.aspect)}+4+4`,
+		`${tile}x${Math.round(tile * opts.aspect)}+${PAD}+${PAD}`,
 		"-background",
 		"#111111",
 		"-fill",
 		"white",
 		"-pointsize",
-		"20",
+		"15",
 		"-quality",
 		"85",
 		out,
 	);
 	await run("magick", args, { signal: opts.signal });
+	// Rounding in montage can overshoot by a few pixels. Never send more than the API would keep.
+	await run("magick", [out, "-resize", `${MAX_EDGE}x${MAX_EDGE}>`, "-resize", `${MAX_PIXELS}@>`, out], {
+		signal: opts.signal,
+	});
 	return out;
 }
 
-/** 3x3 storyboards, 9 frames each, about 1560 px wide. `aspect` is height over width, so tiles match the video. */
+/** Splits frames evenly over `count` storyboards, each filled to the API's native image size. */
 export async function storyboards(
 	frames: LabeledFrame[],
 	dir: string,
 	aspect: number,
+	count: number,
 	signal?: AbortSignal,
+	name = "storyboard",
 ): Promise<string[]> {
 	const boards: string[] = [];
-	for (let i = 0; i < frames.length; i += 9) {
+	const n = Math.max(1, Math.min(count, frames.length));
+	const per = Math.ceil(frames.length / n);
+	for (let i = 0; i < frames.length; i += per) {
 		boards.push(
-			await montage(frames.slice(i, i + 9), join(dir, `storyboard-${boards.length + 1}.jpg`), {
-				cols: 3,
-				tile: 512,
-				aspect,
-				signal,
-			}),
+			await montage(frames.slice(i, i + per), join(dir, `${name}-${boards.length + 1}.jpg`), { aspect, signal }),
 		);
 	}
 	return boards;

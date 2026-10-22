@@ -15,10 +15,29 @@ import { detectPoses, recognizeText } from "./vision.js";
 import { imageBlock, montage, motionTrail, spectrogram, storyboards } from "./visuals.js";
 
 const ANALYSIS_VERSION = 1;
-const MAX_INLINE_STORYBOARDS = 6;
-const MAX_INLINE_MOTION = 4;
+/**
+ * Claude Code warns above 10,000 estimated tokens per MCP result and truncates near 25,000. It counts text at
+ * exactly round(characters / 4) and every image as 1600 (Claude Code 2.1.308). The estimate below covers the
+ * full result text, so the budget can sit just under the warning.
+ */
+export const RESULT_TOKEN_BUDGET = 9700;
+export const IMAGE_TOKENS = 1600;
+const MAX_STORYBOARDS = 4;
+/** Past 12 frames, tiles in one 1.15-megapixel board get too small to read. */
+const MAX_PER_INLINE_BOARD = 12;
+const MOTION_SPANS = 4;
 /** Digest text past this many characters goes to the file only, with the top shown inline. */
-const MAX_INLINE_CHARS = 60_000;
+const MAX_INLINE_CHARS = 24_000;
+
+/** The path goes under the title, so it survives when a long digest is cut at MAX_INLINE_CHARS. */
+function withDigestPath(digest: string, path: string): string {
+	const nl = digest.indexOf("\n");
+	return `${digest.slice(0, nl)}\nDigest file (full text): ${path}${digest.slice(nl)}`;
+}
+
+export function estimateTokens(text: string, images: number): number {
+	return Math.ceil(Math.min(text.length, MAX_INLINE_CHARS) / 4) + images * IMAGE_TOKENS;
+}
 
 /** Signals computed once per video and cached in its folder, so inspect_video does not redo them. */
 export interface Analysis {
@@ -181,12 +200,11 @@ export async function watchVideo(
 		step("Extracting keyframes and building storyboards");
 		const times = chooseFrameTimes(info.duration, motion.cuts, motion.points, opts.maxFrames ?? DEFAULT_MAX_FRAMES);
 		keyframes = await extractFrames(source, times, visDir, "f", opts.signal);
-		boards = await storyboards(keyframes, visDir, aspect, opts.signal);
-		// The busiest spans get a frame strip and a trail. Only spans with real activity qualify.
+		// The busiest spans get a frame strip and a trail, saved for Claude to open. Only real activity qualifies.
 		const busy = [...motion.spans]
 			.filter((s) => s.energy > 0.01 && s.end - s.start >= 0.5)
 			.sort((x, y) => y.energy * (y.end - y.start) - x.energy * (x.end - x.start))
-			.slice(0, MAX_INLINE_MOTION)
+			.slice(0, MOTION_SPANS)
 			.sort((x, y) => x.start - y.start);
 		for (const [i, s] of busy.entries()) {
 			const end = Math.min(s.end, s.start + 6);
@@ -196,12 +214,7 @@ export async function watchVideo(
 				reason: "motion" as const,
 			}));
 			const frames = await extractFrames(source, stripTimes, visDir, `m${i + 1}-`, opts.signal);
-			const strip = await montage(frames, join(visDir, `motion-${i + 1}-strip.jpg`), {
-				cols: 3,
-				tile: 480,
-				aspect,
-				signal: opts.signal,
-			});
+			const strip = await montage(frames, join(visDir, `motion-${i + 1}-strip.jpg`), { aspect, signal: opts.signal });
 			motionImages.push({ path: strip, start: s.start, end, kind: "strip" });
 			const trail = await motionTrail(source, s.start, end, join(visDir, `motion-${i + 1}-trail.jpg`), opts.signal);
 			motionImages.push({ path: trail, start: s.start, end, kind: "trail" });
@@ -219,33 +232,53 @@ export async function watchVideo(
 		? await spectrogram(a.wav, join(visDir, "audio-spectrogram.png"), { signal: opts.signal })
 		: undefined;
 
-	const digest = buildDigest({
-		source,
-		info,
-		transcript: a.transcript,
-		sounds: a.sounds,
-		cuts: motion?.cuts ?? [],
-		spans: motion?.spans ?? [],
-		motionFps: motion?.fps ?? 0,
-		keyframes,
-		ocr,
-		poses,
-		clap,
-		storyboards: boards,
-		motionImages,
-		audioStrip,
-	});
 	const digestPath = join(outDir, "digest.md");
+	const digestFor = (storyboardPaths: string[]) =>
+		withDigestPath(
+			buildDigest({
+				source,
+				info,
+				transcript: a.transcript,
+				sounds: a.sounds,
+				cuts: motion?.cuts ?? [],
+				spans: motion?.spans ?? [],
+				motionFps: motion?.fps ?? 0,
+				keyframes,
+				ocr,
+				poses,
+				clap,
+				storyboards: storyboardPaths,
+				motionImages,
+				audioStrip,
+			}),
+			digestPath,
+		);
+	// Storyboards get whatever image budget the text and the spectrogram leave, from 1 to 4. When that budget
+	// cannot show every keyframe at 12 or fewer per board, the inline boards show an evenly spaced overview and
+	// full 9-frame boards go to disk for Claude to open.
+	let inline: string[] = [];
+	if (keyframes.length) {
+		const fullCount = Math.ceil(keyframes.length / 9);
+		const draftNames = Array.from({ length: MAX_STORYBOARDS + fullCount }, (_, i) =>
+			join(visDir, `storyboard-${i + 1}.jpg`),
+		);
+		const left = RESULT_TOKEN_BUDGET - estimateTokens(digestFor(draftNames), audioStrip ? 1 : 0);
+		const count = Math.max(1, Math.min(MAX_STORYBOARDS, Math.floor(left / IMAGE_TOKENS)));
+		if (keyframes.length <= count * MAX_PER_INLINE_BOARD) {
+			boards = await storyboards(keyframes, visDir, aspect, count, opts.signal);
+			inline = boards;
+		} else {
+			const n = count * MAX_PER_INLINE_BOARD;
+			const pick = Array.from({ length: n }, (_, i) => keyframes[Math.floor(((i + 0.5) * keyframes.length) / n)]);
+			const overview = await storyboards(pick, visDir, aspect, count, opts.signal, "overview");
+			const full = await storyboards(keyframes, visDir, aspect, fullCount, opts.signal);
+			boards = [...overview, ...full];
+			inline = overview;
+		}
+	}
+	const digest = digestFor(boards);
 	writeFileSync(digestPath, digest);
-	const inline = [
-		...boards.slice(0, MAX_INLINE_STORYBOARDS),
-		...motionImages
-			.filter((m) => m.kind === "strip")
-			.map((m) => m.path)
-			.slice(0, MAX_INLINE_MOTION),
-		...(audioStrip ? [audioStrip] : []),
-	];
-	return { digest, digestPath, inline };
+	return { digest, digestPath, inline: [...inline, ...(audioStrip ? [audioStrip] : [])] };
 }
 
 export interface InspectResult {
@@ -317,11 +350,10 @@ export async function inspectVideo(
 		const pairs = await measureMotion(small.paths, opts.signal);
 		const m = analyzeMotion(small.times, small.scores, pairs, fps);
 		motionText = [...m.cuts.map((c) => `  Scene cut at ${fmtTime(c)}`), ...m.spans.map((s) => `  ${s.text}`)];
-		for (let i = 0; i < frames.length; i += 12) {
+		// Up to 18 frames per strip keeps a 36-frame window to two images plus the trail and spectrogram.
+		for (let i = 0; i < frames.length; i += 18) {
 			images.push(
-				await montage(frames.slice(i, i + 12), join(dir, `strip-${images.length + 1}.jpg`), {
-					cols: 4,
-					tile: 384,
+				await montage(frames.slice(i, i + 18), join(dir, `strip-${images.length + 1}.jpg`), {
 					aspect: a.info.width ? a.info.height / a.info.width : 9 / 16,
 					signal: opts.signal,
 				}),

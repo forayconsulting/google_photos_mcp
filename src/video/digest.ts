@@ -29,12 +29,9 @@ const MAX_SEGMENT_S = 30;
 
 export const READING_NOTES = [
 	"How to read this:",
-	"- Motion lines come from optical flow on frames sampled several times a second. Speeds are relative, not measured.",
-	"- Camera lines describe the camera. Handheld drift is small back-and-forth movement with no steady direction. A new shot starts at a hard cut or a very fast camera move.",
-	"- Subject lines describe what moves apart from the camera, by direction, speed, and where in the frame.",
-	"- Sound labels come from Apple's on-device sound classifier, with confidence. A sudden sound marks a loudness jump the classifier could not label.",
-	"- You cannot hear this audio. Tone of voice, music content, and audio quality are not captured beyond these labels and the spectrogram.",
-	"- Fast events between frames can be missed. Call inspect_video with start and end to look closer at any moment.",
+	"- Motion comes from optical flow sampled several times a second. Speeds are relative. Handheld drift is small movement with no steady direction. A new shot starts at a hard cut or a very fast camera move.",
+	"- Sound labels come from an on-device classifier, with confidence. A sudden sound is a loudness jump it could not label. You read these and the spectrogram. You do not hear the audio.",
+	"- The storyboards are small. Open keyframes (f01.jpg and on) for small objects, faces, and text. Call inspect_video with start and end for any moment that needs a closer look.",
 ];
 
 /** Splits the timeline at scene cuts, then splits long scenes into equal parts of 30 s or less. */

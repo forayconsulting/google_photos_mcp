@@ -54,7 +54,7 @@ export function registerVideoTools(server: McpServer, deps: PickDeps): void {
 					onProgress: progressFor(extra),
 					signal: extra.signal,
 				});
-				return toolResult(`${r.digest}\n\nDigest file: ${r.digestPath}`, r.inline);
+				return toolResult(r.digest, r.inline);
 			} catch (err) {
 				return errorResult(err);
 			}
