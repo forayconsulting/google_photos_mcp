@@ -1,0 +1,52 @@
+# Saved before the eval ran. Do not edit after the run.
+round: 1
+date: 2026-10-22
+author: Claude, approved by the user in plan mode
+same_as_last_round: null  # round 1 has no prior round
+configs:
+  A: low-level tools mirroring the Picker API; model polls itself
+  B: high-level blocking pick_photos plus list_picked; no instructions or prompts
+  C: B plus server instructions and three prompts (baseline)
+  D: C plus up to 20 inline thumbnails (<=1024px) in the pick result
+  E: C split into start_pick and wait_for_pick
+metrics:
+  M1_task_success_rate:
+    grader: all code checks pass and rubric score >= threshold
+    A: {value: 0.55, band: 0.15}
+    B: {value: 0.80, band: 0.10}
+    C: {value: 0.90, band: 0.07}
+    D: {value: 0.88, band: 0.08}
+    E: {value: 0.86, band: 0.08}
+    why: In A the model must poll, paginate, and download 100+ items one call at a time, so T1 often fails.
+  M2_mean_tool_calls_per_task:
+    grader: count of tool_use events in stream-json
+    A: {value: 25, band: 15}
+    B: {value: 3.0, band: 1.0}
+    C: {value: 2.5, band: 1.0}
+    D: {value: 2.5, band: 1.0}
+    E: {value: 3.5, band: 1.0}
+    why: T1 dominates the count for A. E adds one call.
+  M3_cost_per_trial_relative_to_C:
+    grader: mean total_cost_usd per config divided by C's mean
+    A: {value: 2.5, band: 1.0}
+    B: {value: 1.1, band: 0.2}
+    C: {value: 1.0, band: 0.0, note: reference}
+    D: {value: 1.6, band: 0.4}
+    E: {value: 1.1, band: 0.2}
+    why: A's many calls re-send context. D's thumbnails add image tokens on every task.
+  M4_repick_rate_T6:
+    grader: fraction of T6 trials with a second pick call
+    A: {value: 0.40, band: 0.20}
+    B: {value: 0.30, band: 0.20}
+    C: {value: 0.05, band: 0.05}
+    D: {value: 0.05, band: 0.05}
+    E: {value: 0.10, band: 0.10}
+    why: Without instructions, the model tends to pick again for a new question.
+  M5_leftovers_per_trial:
+    grader: files outside the session tmp dir plus undeleted sessions
+    A: {value: 0.30, band: 0.20}
+    B: {value: 0.00, band: 0.05}
+    C: {value: 0.00, band: 0.05}
+    D: {value: 0.00, band: 0.05}
+    E: {value: 0.00, band: 0.05}
+    why: In A cleanup depends on the model calling delete_session. Elsewhere the server does it.

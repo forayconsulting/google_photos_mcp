@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.envrc
+.env
+.dev.vars
+*.log
+.playwright-cli/
+# Personal photos captured for evals. Never commit.
+spe/evals/fixtures/
+spe/evals/runs/
+.claude/
