@@ -8,6 +8,7 @@ import { PickedSets } from "./manifest.js";
 import { registerPrompts, serverInstructions } from "./prompts.js";
 import { sourceFromEnv } from "./source/index.js";
 import { TmpStore } from "./tmp.js";
+import { cancelPrefetch } from "./video/tools.js";
 
 // GPHOTOS_CONFIG selects the tool surface under evaluation. C is the baseline and the default.
 type ConfigId = "a" | "b" | "c" | "d" | "e";
@@ -38,6 +39,8 @@ let cleaned = false;
 function cleanup(): void {
 	if (cleaned) return;
 	cleaned = true;
+	// Abort is synchronous, so background video helpers stop before their folders are deleted.
+	void cancelPrefetch();
 	tmp.removeOwned();
 }
 process.on("exit", cleanup);

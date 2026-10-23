@@ -41,7 +41,7 @@ export function fileNameFor(item: PickedMediaItem, used: Set<string>): string {
 	return name;
 }
 
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
 	const out: R[] = new Array(items.length);
 	let next = 0;
 	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
