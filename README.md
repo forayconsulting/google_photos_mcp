@@ -1,94 +1,151 @@
-# google_photos_mcp
+# Google Photos MCP
 
-A small local MCP server that lets Claude Code pull photos from your Google Photos.
+**Hand Claude the photos and videos on your phone.** Pick them in Google Photos, and Claude gets the original files in seconds. It can read slides, redraw whiteboards, and watch your videos, with speech, sound, and motion included. Everything after the download runs on your Mac.
 
-## What it is for
+```
+You:    Watch the video I just took and tell me what happens.
+Claude: A Google Photos picker is open in your browser. Select the video, then click Done.
+        ...
+        It's a 26-second selfie. You introduce yourself and say this is a test of the video MCP,
+        then turn the camera to a framed print of zebras crossing a savanna...
+```
 
-You take photos on your phone. They back up to Google Photos. Later, at your laptop, you ask Claude to work with them. Some examples:
+## Without it, and with it
 
-- Take notes from photos of a slide deck.
-- Turn a photo of a whiteboard or journal page into Mermaid or Markdown.
-- Ingest a batch of shots of an object for photogrammetry.
-- Watch a video you took and answer questions about what was said, heard, and shown.
+**Without it:** you open photos.google.com, download each file, find it in Downloads, and paste paths into the chat. A video stays a sealed box, because Claude cannot play it.
 
-You no longer have to download photos and paste file paths.
+**With it:** you ask. A picker opens in your laptop browser, already signed in. You select and click Done. Claude has the originals, their capture times and camera details, and for videos a full timeline of what was said, heard, and shown.
+
+## What you can ask
+
+- "Take notes from the slide photos I took in this morning's talk."
+- "Turn the whiteboard photo I just took into a Mermaid diagram."
+- "Grab the 150 photos of the chair I shot for photogrammetry and check none are missing."
+- "Watch the video from my walk and tell me what the dog was barking at."
+- "In the clip I took at the concert, when does the crowd start cheering?"
+- "Watch this local file, ~/Movies/demo.mov, and write a summary."
+
+## Key features
+
+- **One device.** The picker opens on your laptop. No QR codes and no phone steps.
+- **Original files.** Full-resolution photos and videos, with EXIF capture time, camera, lens, and exposure.
+- **Videos Claude can understand.** `watch_video` returns a timestamped transcript, sound events, camera and subject motion, on-screen text, people, storyboards, and a spectrogram in one call. `inspect_video` zooms in on any moment.
+- **Fast.** A 13-second 4K clip is ready in about 2.3 s on an M4 Pro, and a picked video is processed in the background before Claude even asks.
+- **Sized for the conversation.** Every video result stays under Claude Code's 10,000-token MCP warning, so nothing is cut off.
+- **Local and free.** Speech, sound, motion, and text analysis run on your Mac with open models and Apple frameworks. There is no paid API and no extra account.
+- **Leaves nothing behind.** Downloads go to a temp folder and are deleted when the session ends, or after 24 hours.
 
 ## How it works
 
-1. You ask Claude for photos.
-2. A Google Photos picker opens in your laptop browser.
-3. You select the photos and click Done.
-4. The server downloads the originals to a temp folder and gives Claude the paths, capture times, and camera details.
-5. The files are deleted when the Claude session ends, or after 24 hours.
+```mermaid
+flowchart LR
+  A[You ask Claude] --> B[Picker opens in your browser]
+  B --> C[You select and click Done]
+  C --> D[Server downloads the originals to a temp folder]
+  D --> E[Claude reads photos by path]
+  D --> F[Videos: transcript, sounds, motion, text, storyboards]
+  F --> E
+```
 
-## Limits
+Since March 2025, Google lets apps see only the photos you select in its picker. This server follows that model: you choose, and Claude works with exactly what you chose.
 
-- You pick the photos yourself. Since March 2025, Google only lets apps see photos the user selects in the picker. An app cannot search your library on its own.
-- There is no location data. Google removes GPS from picker downloads. Type a place name into the picker's search box instead.
-- It runs on macOS. It uses the `open` command, the Keychain, and `sips`.
+## What Claude sees in a video
 
-## Videos
+`watch_video` turns a video into one timeline, plus a few images. This excerpt comes from an 11-second test clip with a spoken line, a red box sliding across a still frame, and a short bang:
 
-`watch_video` turns a video into one timeline that Claude reads in a single call. It works on picked videos and on any local video file.
+```
+## 0:00.0-0:05.0 (shot 1)
+Motion:
+  0:00.0-0:04.8 Camera still. Nothing else moves.
+Speech:
+  [0:00.5] Welcome to the demo. The red box moves to the right.
 
-- **Speech:** a full, timestamped transcript from whisper.cpp (`large-v3-turbo`) with voice activity detection.
-- **Other sounds:** labels from Apple's on-device sound classifier, "sudden sound" marks for loudness jumps it cannot label, silences, and a spectrogram image.
-- **Your own sound questions:** `listen_for` takes plain descriptions, such as "a door slamming", and scores them with the open CLAP model.
-- **Motion:** optical flow from Apple's Vision framework, sampled 4 times a second. A robust camera fit separates camera motion (pan, tilt, zoom, handheld drift) from things moving in the frame. More keyframes go where more happens.
-- **Pictures:** 3x3 storyboards with time labels, frame strips of the busiest moments, on-screen text, and people.
+## 0:05.0-0:11.0 (shot 2)
+Motion:
+  0:06.5-0:10.8 Camera still. Something moving right (slow) from the left side to the center, covering a small area.
+Frames: f02 0:05.5, f03 0:06.0, f04 0:06.6, ...
+Sounds:
+  0:08.0 sudden sound, unlabeled (-14 LUFS, out of silence)
+```
 
-`inspect_video` zooms in on one window with dense frames, frame-by-frame motion, a motion trail, and a spectrogram.
+Inline images come with it: up to four storyboards of nine frames each and a spectrogram of the audio. Full-resolution keyframes stay on disk for Claude to open when it needs detail.
 
-Each result stays under Claude Code's 10,000-token warning for MCP responses. Up to 4 storyboards of 9 frames go inline, sized to what the model API keeps. Long videos get an evenly spaced overview board inline, and the full storyboards, keyframes, and digest stay on disk for Claude to open. `spe/evals/video-eval.md` has the measurements.
+| Signal | Source |
+|---|---|
+| Speech | whisper.cpp (`large-v3-turbo`) with voice activity detection |
+| Sounds | Apple's on-device sound classifier, plus loudness jumps and silences |
+| Sounds you name | `listen_for: ["a door slamming"]`, scored with the open CLAP model |
+| Motion | Vision optical flow at 4 frames per second, with a camera fit that separates pans, tilts, zooms, and handheld drift from things moving in the frame |
+| Text and people | Vision text recognition, human detection, face detection, and body pose |
+| Pictures | Storyboards, keyframes, and a spectrogram |
 
-Everything runs on your Mac with no account and no paid API. The first video call downloads the whisper models (about 1.6 GB) to `~/.cache/gphotos-mcp/models/`. The first `listen_for` call downloads CLAP (about 1.4 GB) there too.
+## Quick start
 
-Limits:
+You need a Mac, Node.js, Homebrew, and a Google account whose photos back up to Google Photos.
 
-- Claude reads a transcript, sound labels, and a spectrogram. It does not hear tone of voice or music the way a person does.
-- Motion is sampled. Very fast events between samples can be missed unless Claude zooms in with `inspect_video`.
-- Motion speeds are relative, and a very fast phone swing can register as a new shot.
-- There are no speaker labels yet.
+1. **Create a Google OAuth client.** In the Google Cloud console:
+   - Create a project and enable the **Photos Picker API**.
+   - In **Google Auth Platform**, set the audience to **External** and add yourself as a test user.
+   - Create an OAuth client of type **Desktop app**. Save its JSON as `~/.config/gphotos-mcp/client_secret.json`.
 
-## Setup
-
-1. Create a Google Cloud project and enable the Photos Picker API.
-2. In Google Auth Platform, set the audience to External and add yourself as a test user.
-3. Create a Desktop app OAuth client. Save its JSON as `~/.config/gphotos-mcp/client_secret.json`.
-4. For videos, install the media tools:
+2. **Install the media tools** for videos:
 
    ```sh
    brew install ffmpeg whisper-cpp imagemagick uv
+   xcode-select --install   # the build compiles a small Swift helper
    ```
 
-   The build compiles a small Swift helper, so the Xcode Command Line Tools must be installed (`xcode-select --install`).
-
-5. Build the server:
+3. **Build:**
 
    ```sh
    npm install
    npm run build
    ```
 
-6. Register it with Claude Code:
+4. **Register with Claude Code:**
 
    ```sh
    claude mcp add --scope user gphotos -e GPHOTOS_SOURCE=picker -- node "$PWD/dist/index.js"
    ```
 
-7. In a new Claude Code session, ask for photos. On first use, a Google sign-in tab opens. The server stores the refresh token in your macOS Keychain.
+5. **Ask for a photo** in a new Claude Code session. The first time, a Google sign-in tab opens. The refresh token goes into your macOS Keychain.
 
-While the OAuth app stays in Testing mode, Google makes you sign in again every 7 days.
+The first video call downloads the whisper models (about 1.6 GB), and the first `listen_for` call downloads CLAP (about 1.4 GB). Both go to `~/.cache/gphotos-mcp/models/` and are reused after that.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `pick_photos` | Opens the picker, waits for Done, downloads the files, and returns a manifest |
-| `list_picked` | Filters photos you already picked by time, camera, or type, without opening the picker again |
-| `watch_video` | Turns a picked or local video into a timeline of speech, sounds, motion, on-screen text, and storyboards |
-| `inspect_video` | Looks closely at one time window of a video |
-| `cleanup_photos` | Deletes the temp files now |
+| `pick_photos` | Opens the picker, waits for Done, downloads the originals, and returns a manifest with paths, capture times, and camera data |
+| `list_picked` | Filters what you already picked by time, camera, or type, without opening the picker again |
+| `watch_video` | Turns a picked or local video into a timeline of speech, sounds, motion, on-screen text, and people, with storyboards and a spectrogram |
+| `inspect_video` | Looks closely at one window of a video: dense frames, frame-by-frame motion, a motion trail, a spectrogram, and optional `listen_for` checks |
+| `cleanup_photos` | Deletes the downloaded files now |
+
+The server also ships prompts that chain these tools for common jobs. In Claude Code they appear as slash commands:
+
+| Prompt | For |
+|---|---|
+| `/mcp__gphotos__watch_video` | Watching a video and explaining what happens |
+| `/mcp__gphotos__notes_from_slides` | Notes from photos of presentation slides |
+| `/mcp__gphotos__diagram_to_mermaid_or_markdown` | Whiteboards, diagrams, and handwritten pages |
+| `/mcp__gphotos__ingest_photo_set` | Large sets, such as a photogrammetry capture |
+
+## Privacy and security
+
+- **Scope:** the only Google permission is `photospicker.mediaitems.readonly`. Google shares only the items you select, and the server cannot browse or change your library.
+- **Credentials:** the OAuth client file stays in `~/.config/gphotos-mcp/`, and the refresh token stays in your macOS Keychain.
+- **Your files:** downloads and video analysis live under your temp folder. They are deleted when the server stops, or after 24 hours.
+- **Local analysis:** video and audio never leave your Mac. The only network calls go to Google's Photos Picker API and, once, to download the open models and their Python packages.
+
+## Limits
+
+- **You do the picking.** Google does not let apps search your library. You can type a place, person, or subject into the picker's search box.
+- **No location.** Google removes GPS from picker downloads.
+- **macOS only.** The server uses `open`, the Keychain, `sips`, Apple's Vision and SoundAnalysis frameworks, and VideoToolbox for HEVC video.
+- **Claude reads the audio.** It gets a transcript, sound labels, and a spectrogram. It does not hear tone of voice or music the way you do, and there are no speaker labels yet.
+- **Motion is sampled.** Very fast moments between samples can be missed unless Claude zooms in with `inspect_video`. Speeds are relative, and a fast phone swing can count as a new shot.
+- **Weekly sign-in.** While the OAuth app stays in Testing mode, Google asks you to sign in again every 7 days.
 
 ## Development
 
@@ -97,6 +154,12 @@ npm test
 npm run lint
 ```
 
-The video integration test builds a 30-second video with known speech, cuts, motion, and sounds, then checks the pipeline finds each one. It skips itself until the models are downloaded. `node spe/evals/video-smoke.mjs <video> <start> <end>` runs both video tools through the built server. `node spe/evals/video-trial.mjs <round> <video> <n>` runs one paid headless Claude Code trial on a fixture video and grades it against reference facts.
+The video integration test builds a 30-second clip with known speech, cuts, motion, and sounds, then checks that the pipeline finds each one. It skips itself until the models are downloaded.
 
-The `spe/` folder holds the design evals. It compares five tool designs, selected with `GPHOTOS_CONFIG=a` through `e`. Config `c` is the default.
+The `spe/` folder holds the design work and its evidence:
+
+- `spe/evals/video-eval.md` measures answer quality and response size against reference facts.
+- `spe/evals/video-speed.md` measures each speedup and checks it did not change the output.
+- `node spe/evals/video-smoke.mjs <video> <start> <end>` runs both video tools through the built server.
+- `node spe/evals/video-trial.mjs <round> <video> <n>` runs one paid headless Claude Code trial and grades it.
+- `GPHOTOS_CONFIG=a` through `e` select the five tool designs compared in round 1. Config `c` is the default.
