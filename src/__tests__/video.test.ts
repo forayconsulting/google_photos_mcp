@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { describeClap, summarizeClap } from "../video/clap.js";
 import { buildDigest, segmentBounds } from "../video/digest.js";
-import { chooseFrameTimes } from "../video/frames.js";
-import { analyzeMotion, cameraFromWindow, findCuts, type MotionPair, type MotionPoint } from "../video/motion.js";
+import { chooseFrameTimes, nearestIndex } from "../video/frames.js";
+import {
+	analyzeMotion,
+	cameraFromWindow,
+	candidateFps,
+	findCuts,
+	type MotionPair,
+	type MotionPoint,
+	motionFps,
+} from "../video/motion.js";
 import { parseProbe } from "../video/probe.js";
 import { buildSoundEvents, type LoudnessPoint } from "../video/sounds.js";
 import { parseWhisper } from "../video/transcribe.js";
@@ -191,6 +199,41 @@ describe("chooseFrameTimes", () => {
 		expect(busy).toBeGreaterThan(frames.length - busy + 4);
 		for (let i = 1; i < frames.length; i++) expect(frames[i].t - frames[i - 1].t).toBeGreaterThanOrEqual(0.25);
 	});
+
+	it("snaps every frame to a candidate time and keeps them 0.25 s apart", () => {
+		const points: MotionPoint[] = Array.from({ length: 80 }, (_, i) => ({
+			start: i * 0.25,
+			end: (i + 1) * 0.25,
+			camera: "camera still",
+			subject: "moving right",
+			energy: 1,
+			subjectSpeed: 0,
+			movingFraction: 0,
+		}));
+		// A 0.3 s step, so unsnapped times (multiples of 0.125 here) are not already on the grid.
+		const grid = Array.from({ length: 67 }, (_, i) => i * 0.3);
+		const frames = chooseFrameTimes(20, [10], points, 20, grid);
+		expect(frames.length).toBeGreaterThan(15);
+		for (const f of frames) expect(grid).toContain(f.t);
+		for (let i = 1; i < frames.length; i++) expect(frames[i].t - frames[i - 1].t).toBeGreaterThanOrEqual(0.25);
+	});
+});
+
+describe("candidate frames", () => {
+	it("finds the nearest sorted value, taking the earlier one on a tie", () => {
+		const xs = [0, 0.25, 0.5, 1];
+		expect(nearestIndex(xs, -1)).toBe(0);
+		expect(nearestIndex(xs, 0.3)).toBe(1);
+		expect(nearestIndex(xs, 0.375)).toBe(1);
+		expect(nearestIndex(xs, 0.8)).toBe(3);
+		expect(nearestIndex(xs, 5)).toBe(3);
+	});
+
+	it("writes candidates at twice the motion rate, at most 1200 frames, never below the motion rate", () => {
+		expect(candidateFps(13, 4)).toBe(8);
+		expect(candidateFps(200, 4)).toBe(6);
+		expect(candidateFps(600, motionFps(600))).toBe(motionFps(600));
+	});
 });
 
 describe("digest", () => {
@@ -222,7 +265,6 @@ describe("digest", () => {
 			poses: [],
 			clap: [],
 			storyboards: ["/out/watch/storyboard-1.jpg"],
-			motionImages: [],
 		});
 		const [first, second] = text.split("## 0:10.0-0:20.0 (shot 2)");
 		expect(first).toContain('f01: "EXIT"');
@@ -242,15 +284,19 @@ describe("describePeople", () => {
 		right_shoulder: [0.55, 0.4],
 		right_wrist: [0.6, 0.6],
 	} as Record<string, [number, number]>;
+	const human = { confidence: 0.7, box: [0.3, 0.1, 0.4, 0.8] as [number, number, number, number] };
 
-	it("reports position and raised arms from the person's own side", () => {
-		const d = describePeople({ path: "x", people: [{ confidence: 0.9, joints }] });
-		expect(d).toBe("1 person (center, their left arm raised, upper body only)");
+	it("counts people from human boxes and adds posture from a skeleton inside the box", () => {
+		const d = describePeople({ path: "x", people: [{ confidence: 1, joints }], humans: [human], faces: [] });
+		expect(d).toBe("1 person (center, their left arm raised)");
 	});
 
-	it("drops weak detections with low confidence or few joints", () => {
-		const few = { left_shoulder: joints.left_shoulder, left_wrist: joints.left_wrist };
-		expect(describePeople({ path: "x", people: [{ confidence: 0.3, joints }] })).toBe("");
-		expect(describePeople({ path: "x", people: [{ confidence: 0.9, joints: few }] })).toBe("");
+	it("falls back to faces for close selfies", () => {
+		const face = { confidence: 0.86, box: [0.2, 0.2, 0.6, 0.4] as [number, number, number, number] };
+		expect(describePeople({ path: "x", people: [], humans: [], faces: [face] })).toBe("1 person (center, face only)");
+	});
+
+	it("reports nobody when only a skeleton was found", () => {
+		expect(describePeople({ path: "x", people: [{ confidence: 1, joints }], humans: [], faces: [] })).toBe("");
 	});
 });

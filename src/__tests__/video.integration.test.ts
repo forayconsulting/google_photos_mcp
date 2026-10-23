@@ -3,12 +3,13 @@
 // It never downloads models, so it is skipped on a fresh machine until the first watch_video call.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { MODELS, MODELS_DIR } from "../video/deps.js";
 import { estimateTokens, inspectVideo, watchVideo } from "../video/index.js";
+import { prefetchVideos } from "../video/tools.js";
 
 const helper = resolve("dist/video/native/av-helper");
 const have = (bin: string) => spawnSync("/usr/bin/which", [bin]).status === 0;
@@ -168,6 +169,37 @@ describe.skipIf(!ready)("video pipeline on a known test video", () => {
 		expect(digest).toMatch(/"a pure electronic tone": 0:1[12]\.\d-0:1[4-6]\.\d (likely|possible)/);
 		expect(digest).toMatch(/"a dog barking": no clear match/);
 	});
+
+	it("returns a repeat call from the saved result, unchanged", async () => {
+		const t0 = performance.now();
+		const again = await watchVideo(video, join(dir, "out"), { listenFor: ["a pure electronic tone", "a dog barking"] });
+		expect(performance.now() - t0).toBeLessThan(1000);
+		expect(again.digest).toBe(digest);
+		expect(again.inline).toEqual(inline);
+	});
+
+	it("watches a picked video in the background so the later call is instant", async () => {
+		const setDir = join(dir, "picked");
+		const outDir = join(setDir, ".video", "1");
+		const entry = {
+			index: 1,
+			path: video,
+			filename: "test.mp4",
+			createTime: "2026-10-22T00:00:00Z",
+			type: "VIDEO",
+			mimeType: "video/mp4",
+		};
+		prefetchVideos({ sessionId: "s", dir: setDir, pickedAt: "2026-10-22T00:00:00Z", entries: [entry] });
+		const cache = join(outDir, "watch", "watch.json");
+		for (let i = 0; i < 600 && !existsSync(cache); i++) await new Promise((r) => setTimeout(r, 100));
+		expect(existsSync(cache)).toBe(true);
+		// A cache hit returns without rewriting the saved result, so its mtime stays put.
+		const before = statSync(cache).mtimeMs;
+		await new Promise((r) => setTimeout(r, 20));
+		const r = await watchVideo(video, outDir);
+		expect(statSync(cache).mtimeMs).toBe(before);
+		expect(r.inline.length).toBeGreaterThanOrEqual(2);
+	}, 120_000);
 
 	it("inspects a window with dense frames and window motion", async () => {
 		const r = await inspectVideo(video, join(dir, "out"), { start: 12, end: 15 });

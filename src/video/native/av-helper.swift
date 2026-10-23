@@ -190,23 +190,39 @@ func motionBetween(_ a: CGImage, _ b: CGImage) throws -> [String: Any] {
 	return out
 }
 
+/// Pairs run as two contiguous runs at once, so one run's CPU fit overlaps the other's flow request. More runs
+/// in one process gave no further gain, so motion.ts also splits long lists across processes.
+let motionJobs = 2
+
 func runMotion(_ paths: [String]) {
 	guard paths.count >= 2 else { fail("motion needs at least two frames") }
-	var results = [[String: Any]]()
-	var prev = loadImage(paths[0])
-	for i in 1..<paths.count {
-		let next = loadImage(paths[i])
-		do {
-			var r = try motionBetween(prev, next)
-			r["from"] = i - 1
-			r["to"] = i
-			results.append(r)
-		} catch {
-			fail("motion failed between \(paths[i - 1]) and \(paths[i]): \(error)")
+	let pairs = paths.count - 1
+	let jobs = min(motionJobs, pairs)
+	var results = [[String: Any]?](repeating: nil, count: pairs)
+	let lock = NSLock()
+	DispatchQueue.concurrentPerform(iterations: jobs) { k in
+		// Each run walks its own pairs in order and reuses the loaded frame as the next pair's first frame.
+		let first = k * pairs / jobs, last = (k + 1) * pairs / jobs
+		var prev = loadImage(paths[first])
+		for i in (first + 1)...last {
+			let next = loadImage(paths[i])
+			do {
+				var r = try motionBetween(prev, next)
+				r["from"] = i - 1
+				r["to"] = i
+				lock.lock()
+				results[i - 1] = r
+				lock.unlock()
+			} catch {
+				fail("motion failed between \(paths[i - 1]) and \(paths[i]): \(error)")
+			}
+			prev = next
 		}
-		prev = next
 	}
-	emit(results)
+	emit(results.map { r -> [String: Any] in
+		guard let r else { fail("motion result missing") }
+		return r
+	})
 }
 
 // MARK: pose
@@ -221,12 +237,22 @@ let poseJoints: [(VNHumanBodyPoseObservation.JointName, String)] = [
 	(.leftAnkle, "left_ankle"), (.rightAnkle, "right_ankle"),
 ]
 
+/// Vision box in a top-left-origin [x, y, w, h], matching the other modes.
+func topLeftBox(_ r: CGRect) -> [Double] {
+	[round3(Double(r.minX)), round3(1 - Double(r.maxY)), round3(Double(r.width)), round3(Double(r.height))]
+}
+
 func runPose(_ paths: [String]) {
 	var results = [[String: Any]]()
 	for path in paths {
+		// Body pose alone gave false people on a rainy street and missed close selfies (video eval, 2026-10-22).
+		// Human rectangles and faces decide who is there. Skeletons only add posture.
 		let req = VNDetectHumanBodyPoseRequest()
+		let humanReq = VNDetectHumanRectanglesRequest()
+		humanReq.upperBodyOnly = false
+		let faceReq = VNDetectFaceRectanglesRequest()
 		do {
-			try VNImageRequestHandler(cgImage: loadImage(path), options: [:]).perform([req])
+			try VNImageRequestHandler(cgImage: loadImage(path), options: [:]).perform([req, humanReq, faceReq])
 		} catch {
 			fail("pose failed on \(path): \(error)")
 		}
@@ -241,7 +267,13 @@ func runPose(_ paths: [String]) {
 			}
 			if !joints.isEmpty { people.append(["confidence": round3(Double(obs.confidence)), "joints": joints]) }
 		}
-		results.append(["path": path, "people": people])
+		let humans: [[String: Any]] = (humanReq.results ?? []).map {
+			["confidence": round3(Double($0.confidence)), "box": topLeftBox($0.boundingBox)]
+		}
+		let faces: [[String: Any]] = (faceReq.results ?? []).map {
+			["confidence": round3(Double($0.confidence)), "box": topLeftBox($0.boundingBox)]
+		}
+		results.append(["path": path, "people": people, "humans": humans, "faces": faces])
 	}
 	emit(results)
 }

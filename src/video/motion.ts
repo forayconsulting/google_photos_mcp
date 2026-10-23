@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { avHelperPath, run } from "./deps.js";
+import { scaleFilter } from "./frames.js";
+import { type FrameDecode, frameFilters, runDecode } from "./probe.js";
 import { fmtRange, parseMetadataPrint } from "./util.js";
 
 /** One av-helper motion result between consecutive sample frames. Distances are fractions of frame width. */
@@ -64,50 +66,137 @@ export function motionFps(duration: number): number {
 	return duration <= 300 ? 4 : Math.max(0.5, Math.round((1200 / duration) * 10) / 10);
 }
 
+/**
+ * Keyframe candidates come at twice the motion rate, capped at 1200 frames. At the motion rate alone, keyframes moved
+ * up to 1/8 s and missed text that a pan showed for under half a second. Past about 40 minutes the cap wins over the
+ * motion rate, so a long video keeps at most 1200 full-size frames on disk.
+ */
+export function candidateFps(duration: number, fps: number): number {
+	return Math.min(2 * fps, Math.max(fps, Math.floor((1200 / duration) * 10) / 10), 1200 / duration);
+}
+
+/** Sorted times and paths of the full-size frames written by the motion pass. */
+export interface Candidates {
+	times: number[];
+	paths: string[];
+}
+
+function filterPath(path: string): string {
+	return path.replace(/[\\:']/g, "\\$&");
+}
+
+/**
+ * Samples frames for motion analysis in one decode pass. With `candidates` set, the same pass also writes frames
+ * at keyframe size (long edge 1280) and the given rate to that folder, so keyframes and strips need no seeks.
+ */
+/**
+ * Write exactly the frames the filter graph emits. The image muxer's default constant-rate mode could pad or drop
+ * frames, and the Nth JPEG would then no longer match the Nth logged time. Output was identical on the fixtures.
+ */
+const PASSTHROUGH = ["-fps_mode", "passthrough"];
+
 export async function sampleFrames(
 	video: string,
+	decode: FrameDecode,
 	dir: string,
 	fps: number,
-	opts: { start?: number; end?: number; signal?: AbortSignal } = {},
-): Promise<{ paths: string[]; times: number[]; scores: number[] }> {
+	opts: { start?: number; end?: number; signal?: AbortSignal; candidates?: { dir: string; fps: number } } = {},
+): Promise<{ paths: string[]; times: number[]; scores: number[]; candidates: Candidates }> {
 	const metaFile = join(dir, "scores.txt");
 	const window =
 		opts.start === undefined ? [] : ["-ss", opts.start.toFixed(3), "-t", ((opts.end ?? 0) - opts.start).toFixed(3)];
-	await run(
-		"ffmpeg",
-		[
-			"-v",
-			"error",
-			"-y",
-			...window,
-			"-i",
-			video,
-			"-an",
-			"-vf",
-			`fps=${fps},scale=320:-2,select='gte(scene,0)',metadata=print:key=lavfi.scene_score:file=${metaFile.replace(/[\\:']/g, "\\$&")}`,
-			"-q:v",
-			"4",
-			join(dir, "%05d.jpg"),
-		],
-		{ signal: opts.signal },
-	);
+	const scene = `select='gte(scene,0)',metadata=print:key=lavfi.scene_score:file=${filterPath(metaFile)}`;
+	const c = opts.candidates;
+	const candMeta = c ? join(c.dir, "times.txt") : "";
+	// One decode feeds both outputs. The split comes before each branch's own fps filter (on the GPU when decode
+	// is VideoToolbox), because a shared 8 fps stage picked different source frames than 4 fps alone and moved
+	// cuts and motion labels. metadata=print skips frames that carry no metadata, so a marker logs candidate times.
+	const outputs = c
+		? [
+				"-filter_complex",
+				`[0:v]split=2[m][c];[m]${frameFilters(decode, [`fps=${fps}`], ["scale=320:-2", scene])}[small];[c]${frameFilters(decode, [`fps=${c.fps}`], [scaleFilter(1280), "metadata=add:key=candidate:value=1", `metadata=print:key=candidate:file=${filterPath(candMeta)}`])}[big]`,
+				"-map",
+				"[small]",
+				...PASSTHROUGH,
+				"-q:v",
+				"4",
+				join(dir, "%05d.jpg"),
+				"-map",
+				"[big]",
+				...PASSTHROUGH,
+				"-q:v",
+				"3",
+				join(c.dir, "%05d.jpg"),
+			]
+		: [
+				"-an",
+				"-vf",
+				frameFilters(decode, [`fps=${fps}`], ["scale=320:-2", scene]),
+				...PASSTHROUGH,
+				"-q:v",
+				"4",
+				join(dir, "%05d.jpg"),
+			];
+	await runDecode(decode, ["-v", "error", "-y", ...window, ...decode.input, "-i", video, ...outputs], opts.signal);
 	const offset = opts.start ?? 0;
+	const jpgs = (d: string) =>
+		readdirSync(d)
+			.filter((f) => f.endsWith(".jpg"))
+			.sort()
+			.map((f) => join(d, f));
 	const meta = parseMetadataPrint(readFileSync(metaFile, "utf8"), "lavfi.scene_score");
-	const paths = readdirSync(dir)
-		.filter((f) => f.endsWith(".jpg"))
-		.sort()
-		.map((f) => join(dir, f));
+	const paths = jpgs(dir);
 	const n = Math.min(paths.length, meta.length);
+	const candidates: Candidates = { times: [], paths: [] };
+	if (c) {
+		const cmeta = parseMetadataPrint(readFileSync(candMeta, "utf8"), "candidate");
+		const cpaths = jpgs(c.dir);
+		const k = Math.min(cpaths.length, cmeta.length);
+		if (!k) throw new Error(`ffmpeg wrote no keyframe candidates for ${video}.`);
+		candidates.times = cmeta.slice(0, k).map((m) => m.t + offset);
+		candidates.paths = cpaths.slice(0, k);
+	}
 	return {
 		paths: paths.slice(0, n),
 		times: meta.slice(0, n).map((m) => m.t + offset),
 		scores: meta.slice(0, n).map((m) => m.value),
+		candidates,
 	};
 }
 
+/**
+ * Optical flow pairs ran side by side from separate helper processes, but threads in one process gained little,
+ * so long frame lists are split across helpers. Three took about a third of the single-process time on the test
+ * clips, with identical output, and more gave little extra. Each process loads the flow model once, so short
+ * lists are not split.
+ */
+const MOTION_PROCS = 3;
+const MIN_PAIRS_PER_PROC = 12;
+
 export async function measureMotion(paths: string[], signal?: AbortSignal): Promise<MotionPair[]> {
 	if (paths.length < 2) return [];
-	return JSON.parse(await run(avHelperPath(), ["motion", ...paths], { signal })) as MotionPair[];
+	const pairs = paths.length - 1;
+	const procs = Math.max(1, Math.min(MOTION_PROCS, Math.floor(pairs / MIN_PAIRS_PER_PROC)));
+	// One failed helper stops the others, so the error surfaces without waiting on the rest.
+	const stop = new AbortController();
+	const both = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+	const parts = await Promise.all(
+		Array.from({ length: procs }, async (_, k) => {
+			// Chunks share their boundary frame, so the pair across it is measured exactly once.
+			const first = Math.floor((k * pairs) / procs);
+			const last = Math.floor(((k + 1) * pairs) / procs);
+			try {
+				const out = JSON.parse(
+					await run(avHelperPath(), ["motion", ...paths.slice(first, last + 1)], { signal: both }),
+				) as MotionPair[];
+				return out.map((p) => ({ ...p, from: p.from + first, to: p.to + first }));
+			} catch (err) {
+				stop.abort(err);
+				throw err;
+			}
+		}),
+	);
+	return parts.flat();
 }
 
 export function findCuts(times: number[], scores: number[]): number[] {

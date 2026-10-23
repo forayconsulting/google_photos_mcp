@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { filterEntries } from "../manifest.js";
 import { type PickDeps, pickPhotos, type StartedPick, startPick } from "../pick.js";
-import { registerVideoTools } from "../video/tools.js";
+import { cancelPrefetch, prefetchVideos, registerVideoTools } from "../video/tools.js";
 import { errorResult, formatSet, progressFor, text, thumbnails } from "./common.js";
 
 export interface HighOptions {
@@ -64,6 +64,7 @@ export function registerHighLevel(server: McpServer, deps: PickDeps, opts: HighO
 					}
 					const set = await started.done;
 					pending.delete(session_id);
+					prefetchVideos(set);
 					return text(formatSet(set));
 				} catch (err) {
 					pending.delete(session_id);
@@ -86,6 +87,7 @@ export function registerHighLevel(server: McpServer, deps: PickDeps, opts: HighO
 						onProgress: progressFor(extra),
 						signal: extra.signal,
 					});
+					prefetchVideos(set);
 					const result = text(formatSet(set));
 					if (opts.thumbnails) result.content.push(...thumbnails(set));
 					return result;
@@ -135,6 +137,8 @@ export function registerHighLevel(server: McpServer, deps: PickDeps, opts: HighO
 		async ({ session_id }) => {
 			try {
 				const targets = session_id ? [sets.get(session_id)].filter((s) => s !== undefined) : sets.all();
+				// A background watch would keep writing into the folders this deletes.
+				await cancelPrefetch();
 				for (const s of targets) {
 					tmp.remove(s.dir);
 					sets.delete(s.sessionId);

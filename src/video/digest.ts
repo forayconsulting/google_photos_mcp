@@ -21,7 +21,6 @@ export interface DigestInput {
 	poses: PoseResult[];
 	clap: ClapMatch[];
 	storyboards: string[];
-	motionImages: { path: string; start: number; end: number; kind: "strip" | "trail" }[];
 	audioStrip?: string;
 }
 
@@ -124,10 +123,6 @@ export function buildDigest(d: DigestInput): string {
 			`- Keyframes: f01.jpg to ${d.keyframes[d.keyframes.length - 1].id}.jpg, full resolution. Open one for detail.`,
 		);
 	if (d.storyboards.length) out.push(`- Storyboards: ${d.storyboards.map((p) => basename(p)).join(", ")}`);
-	for (const m of d.motionImages)
-		out.push(
-			`- Motion ${m.kind === "strip" ? "frame strip" : "trail, oldest faintest,"} ${fmtRange(m.start, m.end)}: ${basename(m.path)}`,
-		);
 	if (d.audioStrip) out.push(`- Spectrogram of the whole audio: ${basename(d.audioStrip)}`);
 	return out.join("\n");
 }

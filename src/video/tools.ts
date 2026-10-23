@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { errorResult, progressFor, text } from "../configs/common.js";
+import { log } from "../log.js";
+import type { PickedSet } from "../manifest.js";
 import type { PickDeps } from "../pick.js";
 import { inspectVideo, toolResult, watchVideo } from "./index.js";
 
@@ -38,17 +40,71 @@ export function resolveVideo(deps: PickDeps, args: { session_id?: string; index?
 	return { source: entry.path, outDir: join(set.dir, ".video", String(entry.index)) };
 }
 
+/**
+ * Picked videos are watched in the background right after the pick, one at a time, so the work is mostly done
+ * when Claude calls watch_video. A queued video that Claude asks for first is taken out of the queue and run
+ * directly. Only the first few videos of a pick are prefetched.
+ */
+const PREFETCH_MAX = 3;
+const running = new Map<string, Promise<unknown>>();
+const queued = new Map<string, () => void>();
+let chain: Promise<unknown> = Promise.resolve();
+let prefetchAbort = new AbortController();
+
+/** Stops running and queued prefetches. cleanup_photos and server shutdown call this before deleting folders. */
+export async function cancelPrefetch(): Promise<void> {
+	prefetchAbort.abort(new Error("prefetch cancelled"));
+	prefetchAbort = new AbortController();
+	for (const cancel of queued.values()) cancel();
+	queued.clear();
+	await Promise.all([...running.values()]);
+}
+
+export function prefetchVideos(set: PickedSet): void {
+	const videos = set.entries.filter((e) => e.type === "VIDEO").slice(0, PREFETCH_MAX);
+	for (const e of videos) {
+		const outDir = join(set.dir, ".video", String(e.index));
+		if (running.has(outDir) || queued.has(outDir)) continue;
+		let cancelled = false;
+		queued.set(outDir, () => {
+			cancelled = true;
+		});
+		const { signal } = prefetchAbort;
+		chain = chain.then(async () => {
+			if (cancelled || signal.aborted) return;
+			queued.delete(outDir);
+			const job = watchVideo(e.path, outDir, { signal }).catch((err) => {
+				if (!signal.aborted) log(`prefetch of ${e.path} failed:`, String(err));
+			});
+			running.set(outDir, job);
+			await job;
+			running.delete(outDir);
+		});
+	}
+}
+
+/** Waits for a prefetch already working on this folder, or drops it from the queue so the caller runs it now. */
+async function settlePrefetch(outDir: string): Promise<void> {
+	const cancel = queued.get(outDir);
+	if (cancel) {
+		cancel();
+		queued.delete(outDir);
+	}
+	await running.get(outDir);
+}
+
 export function registerVideoTools(server: McpServer, deps: PickDeps): void {
 	server.registerTool(
 		"watch_video",
 		{
 			description:
-				"Understand a video without reading it frame by frame. Returns one timeline with the full speech transcript, labeled sounds and sudden sounds, camera and subject motion, on-screen text, and people, plus storyboards, motion frame strips, and a spectrogram as images. Runs on this Mac. The first run downloads speech models once.",
+				"Understand a video without reading it frame by frame. Returns one timeline with the full speech transcript, labeled sounds and sudden sounds, camera and subject motion, on-screen text, and people, plus storyboards and a spectrogram as images. Runs on this Mac. The first run downloads speech models once.",
 			inputSchema: { ...target, listen_for: listenFor },
 		},
 		async ({ session_id, index, path, listen_for }, extra) => {
 			try {
 				const v = resolveVideo(deps, { session_id, index, path });
+				await settlePrefetch(v.outDir);
 				const r = await watchVideo(v.source, v.outDir, {
 					listenFor: listen_for,
 					onProgress: progressFor(extra),
@@ -83,6 +139,7 @@ export function registerVideoTools(server: McpServer, deps: PickDeps): void {
 			try {
 				if (end <= start) return text("Error: end must be after start.");
 				const v = resolveVideo(deps, { session_id, index, path });
+				await settlePrefetch(v.outDir);
 				const r = await inspectVideo(
 					v.source,
 					v.outDir,

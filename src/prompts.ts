@@ -38,7 +38,7 @@ export function registerPrompts(server: McpServer, pickTool: string): void {
 					content: {
 						type: "text",
 						text: `<task>Watch ${path ? `the video at ${path}` : "a video I pick from Google Photos"} and ${question ? `answer: ${question}` : "describe what happens in it"}.</task>
-<approach>${path ? "" : `Call ${pickTool} and tell me to select the video. `}Call watch_video. Read the timeline and look at the storyboards and motion strips. Call inspect_video on any moment where motion, sound, or meaning is unclear, with listen_for for specific sounds.</approach>
+<approach>${path ? "" : `Call ${pickTool} and tell me to select the video. `}Call watch_video. Read the timeline and look at the storyboards. Call inspect_video on any moment where motion, sound, or meaning is unclear, with listen_for for specific sounds.</approach>
 <avoid>Claiming to hear tone of voice or music content. Stating CLAP matches as facts. Guessing about fast moments you did not inspect.</avoid>
 <outputs>${question ? "A direct answer, then" : "A summary, then"} a timeline of what is said, heard, and seen, with times. Note anything the signals could not settle.</outputs>`,
 					},

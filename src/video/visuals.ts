@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ImageContent } from "@modelcontextprotocol/sdk/types.js";
 import { run } from "./deps.js";
 import { scaleFilter } from "./frames.js";
+import { type FrameDecode, frameFilters, runDecode } from "./probe.js";
 import { fmtTime } from "./util.js";
 
 export interface LabeledFrame {
@@ -101,14 +102,15 @@ export async function storyboards(
  */
 export async function motionTrail(
 	video: string,
+	decode: FrameDecode,
 	start: number,
 	end: number,
 	out: string,
 	signal?: AbortSignal,
 ): Promise<string> {
 	const dur = Math.max(end - start, 0.2);
-	await run(
-		"ffmpeg",
+	await runDecode(
+		decode,
 		[
 			"-v",
 			"error",
@@ -117,18 +119,23 @@ export async function motionTrail(
 			start.toFixed(3),
 			"-t",
 			dur.toFixed(3),
+			...decode.input,
 			"-i",
 			video,
 			"-an",
 			"-vf",
-			`fps=${(5 / dur).toFixed(4)},${scaleFilter(960)},tmix=frames=5:weights='6 3 2 1 1',select='gte(n\\,4)'`,
+			frameFilters(
+				decode,
+				[`fps=${(5 / dur).toFixed(4)}`],
+				[scaleFilter(960), "tmix=frames=5:weights='6 3 2 1 1'", "select='gte(n\\,4)'"],
+			),
 			"-frames:v",
 			"1",
 			"-q:v",
 			"3",
 			out,
 		],
-		{ signal },
+		signal,
 	);
 	return out;
 }
